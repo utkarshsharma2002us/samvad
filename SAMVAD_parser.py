@@ -484,16 +484,17 @@ def process_folder(folder_path, csv_path, json_output_path, error_csv_path):
     logging.info(f"Invalid Records: {len(error_records)}")
     logging.info("========== SAMVAD Extraction Finished ==========")
     
-#-----------------------------------------------------------------------------
+#-------------------------------Folder Locations----------------------------------------------
 if __name__ == "__main__":
-    folder_path = r"C:\Users\admin\OneDrive\Desktop\OCR\input\SAMVAD"
-    csv_output = r"C:\Users\admin\OneDrive\Desktop\OCR\output.csv"
-    json_output = r"C:\Users\admin\OneDrive\Desktop\OCR\Workflow\parser\SAMVAD\SAMVAD.json"
-    error_csv = r"C:\Users\admin\OneDrive\Desktop\OCR\error\SAMVAD_error.csv"
-    log_folder = r"C:\Users\admin\OneDrive\Desktop\OCR\logs"
+    folder_path = r"C:\Users\admin\OneDrive\Desktop\OCR\input\SAMVAD" #-------Location of folder that has SAMVAD RO's-------
+    csv_output = r"C:\Users\admin\OneDrive\Desktop\OCR\output.csv"   #-------Location of file that stores output-------
+    json_output = r"C:\Users\admin\OneDrive\Desktop\OCR\Workflow\parser\SAMVAD\SAMVAD.json"  #-------Location of json file-------
+    error_csv = r"C:\Users\admin\OneDrive\Desktop\OCR\error\SAMVAD_error.csv" #-------Location of file that stores error-------
+    log_folder = r"C:\Users\admin\OneDrive\Desktop\OCR\logs"   #-------Location of Logs folder-------
 
     setup_logger(log_folder)
 
     process_folder(folder_path, csv_output, json_output, error_csv)
+
 
     print("processed successfully.")
