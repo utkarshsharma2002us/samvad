@@ -124,7 +124,7 @@ def clean_master_name(name):
 
 # -------------------------------- Client Code Mapping --------------------------------
 
-CLIENT_MAPPING_FILE = r"C:\Users\admin\OneDrive\Desktop\OCR\unique_master_client_names.csv"
+CLIENT_MAPPING_FILE = r"C:\Users\admin\OneDrive\Desktop\OCR\unique_master_client_names.csv"   # Location of CSV file for unique client name and client code
 
 client_map_df = pd.read_csv(CLIENT_MAPPING_FILE)
 
