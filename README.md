@@ -5,3 +5,7 @@ SAMVAD.json------------------> use to store extracted data from PDFS
 SAMVAD_mapping---------------> have mapping values
 
 SAMVAD_parser----------------> Main execution file for SAMVAD
+
+output.csv-------------------> Stores output
+
+unique_master_client_name----> Stores all client names and client id
