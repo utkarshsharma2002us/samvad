@@ -8,8 +8,11 @@ from PyPDF2 import PdfReader
 import logging
 from datetime import datetime
 import SAMVAD_mapping
-#---------------Logging-----------------------
+from rapidfuzz import process, fuzz
 
+
+
+#-----------------------------------------------Logging-------------------------------------------------------
 def setup_logger(log_folder):
 
     if not os.path.exists(log_folder):
@@ -95,8 +98,141 @@ def extract_text_from_pdf(pdf_path):
             text += ocr_text + "\n"
 
     return text
+#----------------------------------------------Data Cleaning------------------------------------------------------
+def clean_master_name(name):
 
+    name = str(name).upper().strip()
+#--------designations in Master_client_name in unique_master_client_name.csv are removed to improve fuzzy matching accuracy----------------
+    designations = [
+        "DIRECTOR","JOINT DIRECTOR","DEPUTY DIRECTOR",
+        "ASSISTANT DIRECTOR","SECRETARY","CHIEF",
+        "PRINCIPAL","ADVISOR","COMMISSIONER",
+        "EXECUTIVE OFFICER","EXECUTIVE ENGINEER",
+        "GENERAL MANAGER","REGISTRAR","ENGINEER",
+        "XEN","PUBLIC RELATION OFFICER"
+    ]
 
+    for w in designations:
+        name = name.replace(w, "")
+
+    name = re.sub(r"\[.*?\]", "", name)
+    name = name.replace(",", " ")
+    name = re.sub(r"\s+", " ", name).strip()
+
+    return name
+    
+
+# -------------------------------- Client Code Mapping --------------------------------
+
+CLIENT_MAPPING_FILE = r"C:\Users\admin\OneDrive\Desktop\OCR\unique_master_client_names.csv"
+
+client_map_df = pd.read_csv(CLIENT_MAPPING_FILE)
+
+client_map_df["MASTER_CLIENT_NAME"] = client_map_df["MASTER_CLIENT_NAME"].astype(str)
+
+# Clean master names
+client_map_df["MASTER_NAME_CLEAN"] = client_map_df["MASTER_CLIENT_NAME"].apply(clean_master_name)
+
+client_map_df["MASTER_NAME_CLEAN"] = (
+    client_map_df["MASTER_NAME_CLEAN"]
+    .str.upper()
+    .str.strip()
+)
+
+#City, in Master_client_name in unique_master_client_name.csv are used as a strong signal for client code mapping
+KNOWN_CITIES = [    
+        "DEHRADUN",           
+        "AGRA",               
+        "DELHI",             
+        "CHANDIGARH",         
+        "ROHTAK",              
+        "NAINITAL",           
+        "LUCKNOW",          
+        "PRAYAGRAJ",          
+        "JHANSI",             
+        "VARANASI",           
+        "JALANDHAR",         
+        "DHARAMSHALA",        
+        "ALIGARH",            
+        "GORAKHPUR",          
+        "BAREILLY",           
+        "MEERUT",             
+        "MORADABAD",          
+        "KANPUR",             
+        "SHIMLA",             
+        "HISAR",              
+        "KARNAL",     
+        "JAMMU", 
+]
+
+def extract_city(address):
+
+    if not address:
+        return ""
+
+    address = address.upper()
+
+    for city in KNOWN_CITIES:
+        if city in address:
+            return city
+
+    return ""
+
+#-----------------------------------Fuzzy match function for client code lookup---------------------------------
+def get_client_code(client_name, client_address):
+
+    if not client_name:
+        return ""
+
+    client_name = clean_master_name(client_name)
+
+    # ---------------- CITY FIRST ----------------
+    city = extract_city(client_address)
+
+    if city:
+        city_filtered = client_map_df[
+            client_map_df["MASTER_CLIENT_NAME"].str.upper().str.contains(city)
+        ]
+
+        if not city_filtered.empty:
+
+            match = process.extractOne(
+                client_name,
+                city_filtered["MASTER_NAME_CLEAN"],
+                scorer=fuzz.token_set_ratio
+            )
+
+            if match and match[1] >= 80:
+
+                matched_name = match[0]
+
+                row = city_filtered[
+                    city_filtered["MASTER_NAME_CLEAN"] == matched_name
+                ].iloc[0]
+
+                return row["MASTER_CLIENT_CODE"]
+
+#--------------------------------- GLOBAL MATCH (Fallback) -----------------------------------------
+
+    match = process.extractOne(
+        client_name,
+        client_map_df["MASTER_NAME_CLEAN"],
+        scorer=fuzz.token_set_ratio
+    )
+
+    if match and match[1] >= 85:
+
+        matched_name = match[0]
+
+        row = client_map_df[
+            client_map_df["MASTER_NAME_CLEAN"] == matched_name
+        ].iloc[0]
+
+        return row["MASTER_CLIENT_CODE"]
+
+    return ""
+
+#-----------------------------Extracyion of Agency Name using multiple regex patterns-------------------------------
 def extract_agency_name(text):
 
     match = re.search(r'for .*?\((.*?)\)', text, re.IGNORECASE)
@@ -109,7 +245,7 @@ def extract_agency_name(text):
 
     return None
 
-
+# Extraction of all required fields using regex patterns and data cleaning
 def extract_invoice_data(text):
     data = {}
 
@@ -127,7 +263,7 @@ def extract_invoice_data(text):
         data["Agency Address"] = Agency_ad
     
 
-    ro_match = re.search(r'From\s*:\s*(.*?)\s*GSTIN',text,re.DOTALL)
+    ro_match = re.search(r'From\s*:\s*(.*?)\s*GSTIN',text,re.DOTALL)    #RO FROM field is extracted using regex pattern.
     if ro_match:
         RO_FROM = ro_match.group(1)
         RO_FROM = RO_FROM.replace('\n', ' ')
@@ -142,10 +278,6 @@ def extract_invoice_data(text):
         gstin = gstin_match.group(0)
         data["GSTIN"] = gstin
     
-    
-    client_match = re.search(r'Dept\.?\s*to\s*which\s*advt\.?\s*relates\s*(.*?)\s*(?:\n|Office|Managing|Director|Under)',text,re.IGNORECASE | re.DOTALL)
-    if client_match:
-        data["Client Name"] = client_match.group(1).replace("\n", " ").strip()
             
         
     Client_ad_match = re.search(r'2\.\s*Office/.*?relates\s*(.*?)\s*3\.\s*Ref\.',text,re.DOTALL)
@@ -155,6 +287,20 @@ def extract_invoice_data(text):
     Client_ad = re.sub(r',\s*', ', ', Client_ad)
     Client_ad = re.sub(r'\s+', ' ', Client_ad).strip()
     data["Client Address"] = Client_ad 
+    
+    
+    client_match = re.search(
+    r'Dept\.?\s*to\s*which\s*advt\.?\s*relates\s*(.*?)\s*(?:\n|Office|Managing|Director|Under)',
+    text,
+    re.IGNORECASE | re.DOTALL)
+
+    if client_match:
+
+        client_name = client_match.group(1).replace("\n", " ").strip()
+        data["Client Name"] = client_name
+
+        client_address = data.get("Client Address", "")
+        data["Client_code"] = get_client_code(client_name, client_address)
     
 
     ro_match = re.search(
@@ -195,7 +341,7 @@ def extract_invoice_data(text):
 
 
 
-    #--------------------------------Agency_code_subcode logic-------------------------------
+    #-----------------------------------------Agency_code_subcode logic---------------------------------------------
     
     ro_number = data.get("RO Number", "")
     client_name = data.get("Client Name", "")
@@ -219,7 +365,7 @@ def extract_invoice_data(text):
             data["Agency_code_subcode"] = "SA1462SAM213"
     
     
-    #----------Mapping of Package---------------------
+    #----------------------------------------Mapping of Package-----------------------------------------------------
 
     
     package_matches = re.findall(r'Amar Ujala,\s*([A-Za-z ]+)', text, re.IGNORECASE)
@@ -254,7 +400,8 @@ def extract_invoice_data(text):
         data["Publish Date"] = date_match[0]
         data["Not Later Than"] = date_match[1]
 
-    #-----------------------Default Data------------------------------
+
+#--------------------------------------------Hardcoded values------------------------------------------------------
 
     data["Category"] = "DISPLAY"
     data["AD_CAT"] = "G20"
@@ -262,7 +409,8 @@ def extract_invoice_data(text):
     data["Product"] = "DISPLAY-MISC"
     data["BRAND"] = "None"
     data["Executive"] = "None"
-    
+#-------------------------------------------------------------------------------------------------- ----------------
+
     size_match = re.search(r'/\s*([\d.]+)\s*\(Sq\.?\s*cm', text, re.IGNORECASE)
     if size_match:
         data["Height"] = 1
@@ -281,8 +429,8 @@ def extract_invoice_data(text):
         data["Color"] = ""
     
 
-#--------------- Extract ALL RO Rates correctly ---------------------
-# ---------------- Extract ALL RO Rates and SUM them ----------------
+#-----if multiple RO rates are found, they are all extracted and summed up to get the total RO Rate-----
+
 
     rate_matches = re.findall(r'Rs\.?\s*([\d]+\.\d+)\s*\(Per\s*Sq\.?\s*cm\)',text.replace('\n', ' '),re.IGNORECASE)
     rates = [float(rate) for rate in rate_matches]
@@ -303,11 +451,14 @@ def save_json(data, output_path):
 
 # here data is converted to csv
 def append_to_csv(data, csv_path):
-
+    
+    
+#------Name of the columns in CSV file is defined in the same sequence as required in the output CSV-----------
     columns = [
         "Agency Name",
         "Agency Address",
         "Agency_code_subcode",
+        "Client_code",
         "Client Name",
         "Client Address",
         "RO Number",
@@ -367,9 +518,7 @@ def process_pdf(pdf_path, csv_path, json_folder):
     print("Done.\n")
     
     
-    #---------------------------------------------------------------------------
-    
-    
+#--------------------------------------------Generate CSV from JSON file--------------------------------------------
 def generate_csv_from_json(json_path, csv_path):
     with open(json_path, "r", encoding="utf-8") as f:
         data_list = json.load(f)
@@ -378,6 +527,7 @@ def generate_csv_from_json(json_path, csv_path):
         "Agency Name",
         "Agency Address",
         "Agency_code_subcode",
+        "Client_code",
         "Client Name",
         "Client Address",
         "RO Number",
@@ -407,6 +557,7 @@ def generate_csv_from_json(json_path, csv_path):
     df.to_csv(csv_path, index=False)
 
 
+#------------------------------------Main processing function for folder of PDFs------------------------------------
 def process_folder(folder_path, csv_path, json_output_path, error_csv_path):
 
     all_data = []
@@ -484,17 +635,16 @@ def process_folder(folder_path, csv_path, json_output_path, error_csv_path):
     logging.info(f"Invalid Records: {len(error_records)}")
     logging.info("========== SAMVAD Extraction Finished ==========")
     
-#-------------------------------Folder Locations----------------------------------------------
+#------------------------------------------------------------------------------------------------------------------
+#--Path of the folder containing SAMVAD PDFs, output CSV file path, output JSON file path and error CSV file path--
+
 if __name__ == "__main__":
-    folder_path = r"C:\Users\admin\OneDrive\Desktop\OCR\input\SAMVAD" #-------Location of folder that has SAMVAD RO's-------
-    csv_output = r"C:\Users\admin\OneDrive\Desktop\OCR\output.csv"   #-------Location of file that stores output-------
-    json_output = r"C:\Users\admin\OneDrive\Desktop\OCR\Workflow\parser\SAMVAD\SAMVAD.json"  #-------Location of json file-------
-    error_csv = r"C:\Users\admin\OneDrive\Desktop\OCR\error\SAMVAD_error.csv" #-------Location of file that stores error-------
-    log_folder = r"C:\Users\admin\OneDrive\Desktop\OCR\logs"   #-------Location of Logs folder-------
+    folder_path = r"C:\Users\admin\OneDrive\Desktop\OCR\input\SAMVAD" #folder path containing SAMVAD's PDFs
+    csv_output = r"C:\Users\admin\OneDrive\Desktop\OCR\output.csv" #output CSV file path
+    json_output = r"C:\Users\admin\OneDrive\Desktop\OCR\Workflow\parser\SAMVAD\SAMVAD.json" #output JSON file path
+    error_csv = r"C:\Users\admin\OneDrive\Desktop\OCR\error\SAMVAD_error.csv" #error CSV file path
+    log_folder = r"C:\Users\admin\OneDrive\Desktop\OCR\logs"#log folder path
 
     setup_logger(log_folder)
-
     process_folder(folder_path, csv_output, json_output, error_csv)
-
-
     print("processed successfully.")
