@@ -8,7 +8,6 @@ from PyPDF2 import PdfReader
 import logging
 from datetime import datetime
 import SAMVAD_mapping
-from rapidfuzz import process, fuzz
 
 
 
@@ -37,37 +36,76 @@ def setup_logger(log_folder):
 
     return log_path
 
+#--------------------------------------------------------------------------------------------------------
 
-
+# Use of pytesseract for OCR (Optical Character Recognition)
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+
+
+# Loading of client code mapping file to extract CLIENT_CODE based on RO_CLIENT_NAME
+mapping_df = pd.read_csv(r"C:\Users\admin\OneDrive\Desktop\OCR\client_code_mapped.csv")
+
+# Create dictionary: RO_CLIENT_NAME → MASTER_CLIENT_CODE
+client_code_map = dict(
+    zip(
+        mapping_df["Ro Client Name"].str.strip().str.upper(),
+        mapping_df["MASTER_CLIENT_CODE"]
+    )
+)
+
+client_name_map = dict(
+    zip(
+        mapping_df["Ro Client Name"].str.strip().str.upper(),
+        mapping_df["MASTER_CLIENT_NAME"]
+    )
+)
 
 # ------------------------required fields that is important to exist----------------------
 
 REQUIRED_FIELDS = [
-        "Agency Name",
-        "Agency Address",
-        "Client Name",
-        "Client Address",
-        "RO Number",
-        "RO FROM",
-        "GSTIN",
-        "Remark",
-        "Newspaper Name",
-        "Booking Centre",
-        "Package",
-        "Publish Date",
-        "Not Later Than",
-        "Category",
-        "Color",
-        "Height",
-        "Width",
+        "FILE_NAME",
+        "AGENCY_NAME",
+        "AGENCY_CODE",
+        "Agency_code_subcode",
+        "CLIENT_CODE",
+        "RO_CLIENT_NAME",
+        "RO_CLIENT_CODE",
+        "RO_NUMBER",
+        "RO_DATE",
+        #"GSTIN",
+        "KEY_NUMBER",
+        "CATEGORY",
+        "COLOUR",
         "AD_CAT",
-        "Product",
+        "AD_SUBCAT",
+        "PRODUCT",
         "BRAND",
+        "PACKAGE_NAME",
+        "INSERT_DATE",
+        "RO_REMARKS",
+        #"Newspaper Name",
+        "AD_HEIGHT",
+        "AD_WIDTH",
+        "AD_SIZE",
         "Executive",
-        "RO Rate",
-        "RO Amount"
+        "PAGE_PREMIUM",
+        "POSITIONING",
+        "RO_RATE",
+        "RO_AMOUNT",
 ]
+
+CATEGORY_TO_SUBCAT = {
+    "Display": "GOVT. DISPLAY",
+    "Tender": "GOVT.TENDER",
+    "Public Notices": "GOVT. DISPLAY",
+    "Auction": "GOVT.TENDER",
+    "Recruitment": "GOVT. DISPLAY",
+    "Others": "GOVT. DISPLAY",
+    "Admission Notice": "GOVT. DISPLAY",
+    "Announcements": "GOVT. DISPLAY",
+}
+
 
 # Extraction using PdfReader
 
@@ -98,139 +136,6 @@ def extract_text_from_pdf(pdf_path):
             text += ocr_text + "\n"
 
     return text
-#----------------------------------------------Data Cleaning------------------------------------------------------
-def clean_master_name(name):
-
-    name = str(name).upper().strip()
-#--------designations in Master_client_name in unique_master_client_name.csv are removed to improve fuzzy matching accuracy----------------
-    designations = [
-        "DIRECTOR","JOINT DIRECTOR","DEPUTY DIRECTOR",
-        "ASSISTANT DIRECTOR","SECRETARY","CHIEF",
-        "PRINCIPAL","ADVISOR","COMMISSIONER",
-        "EXECUTIVE OFFICER","EXECUTIVE ENGINEER",
-        "GENERAL MANAGER","REGISTRAR","ENGINEER",
-        "XEN","PUBLIC RELATION OFFICER"
-    ]
-
-    for w in designations:
-        name = name.replace(w, "")
-
-    name = re.sub(r"\[.*?\]", "", name)
-    name = name.replace(",", " ")
-    name = re.sub(r"\s+", " ", name).strip()
-
-    return name
-    
-
-# -------------------------------- Client Code Mapping --------------------------------
-
-CLIENT_MAPPING_FILE = r"C:\Users\admin\OneDrive\Desktop\OCR\unique_master_client_names.csv"   # Location of CSV file for unique client name and client code
-
-client_map_df = pd.read_csv(CLIENT_MAPPING_FILE)
-
-client_map_df["MASTER_CLIENT_NAME"] = client_map_df["MASTER_CLIENT_NAME"].astype(str)
-
-# Clean master names
-client_map_df["MASTER_NAME_CLEAN"] = client_map_df["MASTER_CLIENT_NAME"].apply(clean_master_name)
-
-client_map_df["MASTER_NAME_CLEAN"] = (
-    client_map_df["MASTER_NAME_CLEAN"]
-    .str.upper()
-    .str.strip()
-)
-
-#City, in Master_client_name in unique_master_client_name.csv are used as a strong signal for client code mapping
-KNOWN_CITIES = [    
-        "DEHRADUN",           
-        "AGRA",               
-        "DELHI",             
-        "CHANDIGARH",         
-        "ROHTAK",              
-        "NAINITAL",           
-        "LUCKNOW",          
-        "PRAYAGRAJ",          
-        "JHANSI",             
-        "VARANASI",           
-        "JALANDHAR",         
-        "DHARAMSHALA",        
-        "ALIGARH",            
-        "GORAKHPUR",          
-        "BAREILLY",           
-        "MEERUT",             
-        "MORADABAD",          
-        "KANPUR",             
-        "SHIMLA",             
-        "HISAR",              
-        "KARNAL",     
-        "JAMMU", 
-]
-
-def extract_city(address):
-
-    if not address:
-        return ""
-
-    address = address.upper()
-
-    for city in KNOWN_CITIES:
-        if city in address:
-            return city
-
-    return ""
-
-#-----------------------------------Fuzzy match function for client code lookup---------------------------------
-def get_client_code(client_name, client_address):
-
-    if not client_name:
-        return ""
-
-    client_name = clean_master_name(client_name)
-
-    # ---------------- CITY FIRST ----------------
-    city = extract_city(client_address)
-
-    if city:
-        city_filtered = client_map_df[
-            client_map_df["MASTER_CLIENT_NAME"].str.upper().str.contains(city)
-        ]
-
-        if not city_filtered.empty:
-
-            match = process.extractOne(
-                client_name,
-                city_filtered["MASTER_NAME_CLEAN"],
-                scorer=fuzz.token_set_ratio
-            )
-
-            if match and match[1] >= 80:
-
-                matched_name = match[0]
-
-                row = city_filtered[
-                    city_filtered["MASTER_NAME_CLEAN"] == matched_name
-                ].iloc[0]
-
-                return row["MASTER_CLIENT_CODE"]
-
-#--------------------------------- GLOBAL MATCH (Fallback) -----------------------------------------
-
-    match = process.extractOne(
-        client_name,
-        client_map_df["MASTER_NAME_CLEAN"],
-        scorer=fuzz.token_set_ratio
-    )
-
-    if match and match[1] >= 85:
-
-        matched_name = match[0]
-
-        row = client_map_df[
-            client_map_df["MASTER_NAME_CLEAN"] == matched_name
-        ].iloc[0]
-
-        return row["MASTER_CLIENT_CODE"]
-
-    return ""
 
 #-----------------------------Extracyion of Agency Name using multiple regex patterns-------------------------------
 def extract_agency_name(text):
@@ -254,53 +159,68 @@ def extract_invoice_data(text):
         agency_block = agency_match.group(1)
         agency_block = agency_block.replace("\n", " ")
         agency_block = re.sub(r"\s+", " ", agency_block).strip()
-        data["Agency Name"] = agency_block
+        data["AGENCY_NAME"] = agency_block
 
 
-    Agency_ad_match = re.search(r'(SAMVAD Office:.*?Ph:\s*[0-9\-\s]+)',text)
-    if Agency_ad_match:
-        Agency_ad = Agency_ad_match.group(1)
-        data["Agency Address"] = Agency_ad
+
+#---------------Extracted data not need to be in CSV file is commented-----------------------------------
+
+    # Agency_ad_match = re.search(r'(SAMVAD Office:.*?Ph:\s*[0-9\-\s]+)',text)
+    # if Agency_ad_match:
+    #     Agency_ad = Agency_ad_match.group(1)
+    #     data["Agency Address"] = Agency_ad
     
 
-    ro_match = re.search(r'From\s*:\s*(.*?)\s*GSTIN',text,re.DOTALL)    #RO FROM field is extracted using regex pattern.
-    if ro_match:
-        RO_FROM = ro_match.group(1)
-        RO_FROM = RO_FROM.replace('\n', ' ')
-        RO_FROM = re.sub(r',\s*', ', ', RO_FROM)
-        RO_FROM = re.sub(r'\s+', ' ', RO_FROM).strip()
-        data["RO FROM"] = RO_FROM
+    # ro_match = re.search(r'From\s*:\s*(.*?)\s*GSTIN',text,re.DOTALL)    #RO FROM field is extracted using regex pattern.
+    # if ro_match:
+    #     RO_FROM = ro_match.group(1)
+    #     RO_FROM = RO_FROM.replace('\n', ' ')
+    #     RO_FROM = re.sub(r',\s*', ', ', RO_FROM)
+    #     RO_FROM = re.sub(r'\s+', ' ', RO_FROM).strip()
+    #     data["RO FROM"] = RO_FROM
     
     
-    normalized = re.sub(r'\s+', '', text)
-    gstin_match = re.search(r'\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d',normalized)
-    if gstin_match:
-        gstin = gstin_match.group(0)
-        data["GSTIN"] = gstin
+    #normalized = re.sub(r'\s+', '', text)
+    # gstin_match = re.search(r'\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d',normalized)
+    # if gstin_match:
+    #     gstin = gstin_match.group(0)
+    #     data["GSTIN"] = gstin
     
             
         
-    Client_ad_match = re.search(r'2\.\s*Office/.*?relates\s*(.*?)\s*3\.\s*Ref\.',text,re.DOTALL)
-    Client_ad = Client_ad_match.group(1)
-    Client_ad = re.sub(r'-\s*\n\s*', '-', Client_ad)
-    Client_ad = Client_ad.replace('\n', ' ')
-    Client_ad = re.sub(r',\s*', ', ', Client_ad)
-    Client_ad = re.sub(r'\s+', ' ', Client_ad).strip()
-    data["Client Address"] = Client_ad 
+    # Client_ad_match = re.search(r'2\.\s*Office/.*?relates\s*(.*?)\s*3\.\s*Ref\.',text,re.DOTALL)
+    # Client_ad = Client_ad_match.group(1)
+    # Client_ad = re.sub(r'-\s*\n\s*', '-', Client_ad)
+    # Client_ad = Client_ad.replace('\n', ' ')
+    # Client_ad = re.sub(r',\s*', ', ', Client_ad)
+    # Client_ad = re.sub(r'\s+', ' ', Client_ad).strip()
+    # data["Client Address"] = Client_ad 
     
     
-    client_match = re.search(
-    r'Dept\.?\s*to\s*which\s*advt\.?\s*relates\s*(.*?)\s*(?:\n|Office|Managing|Director|Under)',
-    text,
-    re.IGNORECASE | re.DOTALL)
+    client_match = re.search(r'Dept\.?\s*to\s*which\s*advt\.?\s*relates\s*(.*?)\s*(?:\n|Office|Managing|Director|Under)',
+    text,re.IGNORECASE | re.DOTALL)
 
     if client_match:
 
-        client_name = client_match.group(1).replace("\n", " ").strip()
-        data["Client Name"] = client_name
+        Ro_client_name = client_match.group(1).replace("\n", " ").strip()
+        data["RO_CLIENT_NAME"] = Ro_client_name
 
-        client_address = data.get("Client Address", "")
-        data["Client_code"] = get_client_code(client_name, client_address)
+    # Normalize for matching
+        lookup_name = re.sub(r'\s+', ' ', Ro_client_name).strip().upper()
+
+    # Fetch from mapping
+        client_code = client_code_map.get(lookup_name, "")
+        client_name = client_name_map.get(lookup_name, "")
+
+    # Assign values
+        data["CLIENT_CODE"] = client_code
+        data["CLIENT_NAME"] = client_name
+
+    # Logging (optional but very useful)
+        if not client_code:
+            logging.warning(f"CLIENT_CODE not found for: {Ro_client_name}")
+        if not client_name:
+            logging.warning(f"CLIENT_NAME not found for: {Ro_client_name}")            # Hard value
     
 
     ro_match = re.search(
@@ -311,7 +231,7 @@ def extract_invoice_data(text):
 
     if ro_match:
         ro_number = ro_match.group(1).replace("\n", "").strip()
-        data["RO Number"] = ro_number
+        data["RO_NUMBER"] = ro_number
 
     # Extracting Edition
     edition_matches = re.findall(r'Amar Ujala,\s*([A-Za-z ]+)', text, re.IGNORECASE)
@@ -321,34 +241,57 @@ def extract_invoice_data(text):
         editions_clean = [e.strip().upper() for e in edition_matches]
 
     # Package
-        data["Package"] = ", ".join(editions_clean)
+        data["PACKAGE_NAME"] = ", ".join(editions_clean)
 
     # Newspaper Name
-        data["Newspaper Name"] = ", ".join([f"Amar Ujala, {e}" for e in editions_clean])
+       # data["Newspaper Name"] = ", ".join([f"Amar Ujala, {e}" for e in editions_clean])
 
     # Booking Centre
         chandigarh_editions = {"ROHTAK", "KARNAL", "HISAR"}
 
         if any(e in chandigarh_editions for e in editions_clean):
-            data["Booking Centre"] = "CHANDIGARH"
+            data["BOOKING_CENTER"] = "CH0"
         else:
-            data["Booking Centre"] = "NATIONAL"
+            data["BOOKING_CENTER"] = "NA1"
 
     else:
-        data["Package"] = ""
-        data["Newspaper Name"] = ""
-        data["Booking Centre"] = ""
+        data["PACKAGE_NAME"] = ""
+        #data["Newspaper Name"] = ""
+        data["BOOKING_CENTER"] = ""
+    
+    subject_match = re.search(r'Subject matter of the advertisement\s*([^\n\r]+)',text,re.IGNORECASE)
+    if subject_match:
+        data["CATEGORY"] = subject_match.group(1).strip()
+        
+        
+    code_match = re.search(r'Advertisement Code\s*SAMVAD:-\s*([A-Z0-9/\n]+?)(?=\s*RO\b|$)',text,re.IGNORECASE)
+    if code_match:
+         data["KEY_NUMBER"] = re.sub(r'\s+', '', code_match.group(1))
+         
+         
+         
+    position_match = re.search(r'\(Sq\.?\s*cm\)\s*/\s*([A-Za-z ]*?)(?=\s*(?:B&W|Colored))',text,re.IGNORECASE | re.DOTALL)
+    if position_match:
+        data["POSITIONING"] = position_match.group(1).strip() if position_match.group(1).strip() else ""
+    else:
+        data["POSITIONING"] = ""
+    
 
+    position = data.get("POSITIONING", "").strip().upper()
+    if position in ["ANY PAGE", "FRONT PAGE"]:
+        data["PAGE_PREMIUM"] = "YES"
+    else:
+        data["PAGE_PREMIUM"] = "NO"
 
 
     #-----------------------------------------Agency_code_subcode logic---------------------------------------------
     
-    ro_number = data.get("RO Number", "")
-    client_name = data.get("Client Name", "")
-    booking_centre = data.get("Booking Centre", "")
+    ro_number = data.get("RO_NUMBER", "")
+    Ro_client_name = data.get("RO_CLIENT_NAME", "")
+    booking_centre = data.get("BOOKING_CENTER", "")
 
     has_C_in_ro = "C" in ro_number.upper()
-    is_multi_department = "MULTI DEPARTMENT" in client_name.upper()
+    is_multi_department = "MULTI DEPARTMENT" in Ro_client_name.upper()
 
     if has_C_in_ro or is_multi_department:
 
@@ -373,60 +316,100 @@ def extract_invoice_data(text):
     if package_matches:
 
         packages = []
-
         for edition in package_matches:
             edition = edition.strip().upper()
             mapped_package = SAMVAD_mapping.PACKAGE_NAME_MAP.get(edition, edition)
             packages.append(mapped_package)
 
-        data["Package"] = ", ".join(packages)
+        data["PACKAGE_NAME"] = ", ".join(packages)
 
     else:
-        data["Package"] = ""
+        data["PACKAGE_NAME"] = ""
       
  
     # Agency name + Package are combined
-    if "Agency Name" in data and package_matches:
-        data["Agency Name"] = data["Agency Name"] + ", " + package_matches[0]
+    if "AGENCY_NAME" in data and package_matches:
+        data["AGENCY_NAME"] = data["AGENCY_NAME"] + ", " + package_matches[0]
     
     
-    remark_match = re.search(r'Remarks?\s+([A-Z ]+)', text)
+    remark_match = re.search( r'Remarks?\s*(.*?)\s*B\.\s*Advertisement',text,re.IGNORECASE | re.DOTALL)
+
     if remark_match:
-        data["Remark"] = remark_match.group(1).strip().upper()
+        remark = remark_match.group(1)
+        remark = remark.replace('\n', ' ')
+        remark = re.sub(r'\s+', ' ', remark).strip()
+        data["RO_REMARKS"] = remark.upper()
+    else:
+        data["RO_REMARKS"] = ""
+        
+    # date_match = re.findall(r'\d{2}-\d{2}-\d{4}', text)
+    # if len(date_match) >= 2:
+    #     data["INSERT_DATE"] = date_match[0]
+        # data["Not Later Than"] = date_match[1]
+        
+    pub_date_match = re.search(r"Publication\s*Date.*?(\d{2}-\d{2}-\d{4})",text, re.IGNORECASE | re.DOTALL)
+    if pub_date_match:
+        data["INSERT_DATE"] = pub_date_match.group(1)
+    else:
+        data["INSERT_DATE"] = ""
+        
+        
+        
+    RO_DATE_match = re.search(r"Dated(.*?)From\s*:", text, re.DOTALL)
 
+    if RO_DATE_match:
+        section = RO_DATE_match.group(1)
 
-    date_match = re.findall(r'\d{2}-\d{2}-\d{4}', text)
-    if len(date_match) >= 2:
-        data["Publish Date"] = date_match[0]
-        data["Not Later Than"] = date_match[1]
+    # Extract only the date
+        date_match = re.search(r"\d{2}/\d{2}/\d{4}", section)
+
+        if date_match:
+            data["RO_DATE"] = date_match.group(0)
+        else:
+            data["RO_DATE"] = ""
+    else:
+        data["RO_DATE"] = ""
 
 
 #--------------------------------------------Hardcoded values------------------------------------------------------
 
-    data["Category"] = "DISPLAY"
-    data["AD_CAT"] = "G20"
-    data["AD_SUBCAT"] = 0
-    data["Product"] = "DISPLAY-MISC"
+    data["AD_CAT"] = "GO2"
+    data["PRODUCT"] = "DISPLAY-MISC"
     data["BRAND"] = "None"
     data["Executive"] = "None"
+    data["AGENCY_CODE"] = "None"
+    data["RO_CLIENT_CODE"] = "None"
 #-------------------------------------------------------------------------------------------------- ----------------
+
+    category = data.get("CATEGORY", "")
+    mapped_subcat = ""
+
+    for key in CATEGORY_TO_SUBCAT:
+        if key in category:
+            mapped_subcat = CATEGORY_TO_SUBCAT[key]
+            break
+    data["AD_SUBCAT"] = mapped_subcat
+
+
+
 
     size_match = re.search(r'/\s*([\d.]+)\s*\(Sq\.?\s*cm', text, re.IGNORECASE)
     if size_match:
-        data["Height"] = 1
-        data["Width"] = float(size_match.group(1))
+        data["AD_HEIGHT"] = 1
+        data["AD_WIDTH"] = float(size_match.group(1))
+        data["AD_SIZE"] = data["AD_HEIGHT"] * data["AD_WIDTH"]
 
     
-    color_match = re.search(r'/Any Page\s*\n\s*(B&W|Colored)',text,re.IGNORECASE)
+    color_match = re.search( r'(?:/(Any Page|Front Page))?\s*\n\s*(B&W|Colored)',text,re.IGNORECASE | re.DOTALL)
     if color_match:
-        color = color_match.group(1).strip().upper()
+        color = color_match.group(2).strip().upper()
 
         if "B" in color:
-            data["Color"] = "B"
+            data["COLOUR"] = "B"
         else:
-            data["Color"] = "C"
+            data["COLOUR"] = "C"
     else:
-        data["Color"] = ""
+        data["COLOUR"] = ""
     
 
 #-----if multiple RO rates are found, they are all extracted and summed up to get the total RO Rate-----
@@ -434,14 +417,14 @@ def extract_invoice_data(text):
 
     rate_matches = re.findall(r'Rs\.?\s*([\d]+\.\d+)\s*\(Per\s*Sq\.?\s*cm\)',text.replace('\n', ' '),re.IGNORECASE)
     rates = [float(rate) for rate in rate_matches]
-    data["RO Rate"] = round(sum(rates), 2) if rates else 0.0
+    data["RO_RATE"] = round(sum(rates), 2) if rates else 0.0
 
 
 
     amounts = re.findall(r'Rs\.?\s*([\d,]+\.\d+)', text)
     if amounts:
         final_amount = amounts[-1].replace(",", "")
-        data["RO Amount"] = float(final_amount)
+        data["RO_AMOUNT"] = float(final_amount)
     return data
 
 #  Save JSON
@@ -454,35 +437,71 @@ def append_to_csv(data, csv_path):
     
     
 #------Name of the columns in CSV file is defined in the same sequence as required in the output CSV-----------
+    
+    
+    #     DB_COLUMNS = [
+#     "FILE_NAME", 
+#     "AGENCY_CODE",
+#     "AGENCY_NAME",
+#     "CLIENT_CODE",
+#     "CLIENT_NAME",
+#     "RO_CLIENT_CODE",
+#     "RO_CLIENT_NAME", 
+#     "RO_NUMBER",
+#     "RO_DATE",
+#     "KEY_NUMBER",
+#     "COLOUR",
+#     "AD_CAT",
+#     "AD_SUBCAT",
+#     "PRODUCT",
+#     "BRAND",
+#     "PACKAGE_NAME",
+#     "INSERT_DATE",
+#     "AD_HEIGHT",
+#     "AD_WIDTH",
+#     "AD_SIZE",
+#     "PAGE_PREMIUM",
+#     "RO_AMOUNT",
+#     "RO_RATE",
+#     "RO_REMARKS",
+#     "EXTRACTED_TEXT",
+#     "POSITIONING"
+# ]
+    
     columns = [
-        "Agency Name",
-        "Agency Address",
+        "FILE_NAME",
+        "AGENCY_NAME",
+        "AGENCY_CODE",
         "Agency_code_subcode",
-        "Client_code",
-        "Client Name",
-        "Client Address",
-        "RO Number",
-        "RO FROM",
-        "GSTIN",
-        "Remark",
-        "Newspaper Name",
-        "Booking Centre",
-        "Package",
-        "Publish Date",
-        "Not Later Than",
-        "Category",
-        "Color",
-        "Height",
-        "Width",
+        "CLIENT_CODE",
+        "CLIENT_NAME",
+        "RO_CLIENT_CODE",
+        "RO_NUMBER",
+        "RO_DATE",
+        #"GSTIN",
+        "KEY_NUMBER",
+        "CATEGORY",
+        "COLOUR",
         "AD_CAT",
         "AD_SUBCAT",
-        "Product",
+        "PRODUCT",
         "BRAND",
+        "PACKAGE_NAME",
+        "INSERT_DATE",
+        "RO_REMARKS",
+        #"Newspaper Name",
+        "AD_HEIGHT",
+        "AD_WIDTH",
+        "AD_SIZE",
         "Executive",
-        "RO Rate",
-        "RO Amount"
+        "PAGE_PREMIUM",
+        "POSITIONING",
+        "RO_RATE",
+        "RO_AMOUNT",
     ]
-
+    if "CLIENT_CODE" not in data:
+        data["CLIENT_CODE"] = ""
+        
     row = {col: data.get(col, "") for col in columns}
     df = pd.DataFrame([row], columns=columns)
 
@@ -502,7 +521,7 @@ def process_pdf(pdf_path, csv_path, json_folder):
     text = extract_text_from_pdf(pdf_path)
     data = extract_invoice_data(text)
 
-    # Create JSON file name
+    # Create JSON FILE_NAME
     base_name = os.path.basename(pdf_path).replace(".pdf", ".json")
     json_path = os.path.join(json_folder, base_name)
 
@@ -523,35 +542,39 @@ def generate_csv_from_json(json_path, csv_path):
     with open(json_path, "r", encoding="utf-8") as f:
         data_list = json.load(f)
 
+    
     columns = [
-        "Agency Name",
-        "Agency Address",
+        "FILE_NAME",
+        "AGENCY_NAME",
+        "AGENCY_CODE",
         "Agency_code_subcode",
-        "Client_code",
-        "Client Name",
-        "Client Address",
-        "RO Number",
-        "RO FROM",
-        "GSTIN",
-        "Remark",
-        "Newspaper Name",
-        "Booking Centre",
-        "Package",
-        "Publish Date",
-        "Not Later Than",
-        "Category",
-        "Color",
-        "Height",
-        "Width",
+        "CLIENT_CODE",
+        "CLIENT_NAME",
+        "RO_CLIENT_CODE",
+        "RO_NUMBER",
+        "RO_DATE"
+        #"GSTIN",
+        "KEY_NUMBER",
+        "CATEGORY",
+        "COLOUR",
         "AD_CAT",
         "AD_SUBCAT",
-        "Product",
+        "PRODUCT",
         "BRAND",
+        "PACKAGE_NAME",
+        "INSERT_DATE",
+        "RO_REMARKS",
+        #"Newspaper Name",
+        "AD_HEIGHT",
+        "AD_WIDTH",
+        "AD_SIZE",
         "Executive",
-        "RO Rate",
-        "RO Amount"
+        "PAGE_PREMIUM",
+        "POSITIONING"
+        "RO_RATE",
+        "RO_AMOUNT",
     ]
-
+    
     df = pd.DataFrame(data_list)
     df = df.reindex(columns=columns)
     df.to_csv(csv_path, index=False)
@@ -577,14 +600,15 @@ def process_folder(folder_path, csv_path, json_output_path, error_csv_path):
             try:
                 text = extract_text_from_pdf(pdf_path)
                 data = extract_invoice_data(text)
-                data["Source File"] = file
+                data["FILE_NAME"] = file
 
                 all_data.append(data)
 
                 # Validate required fields
+                OPTIONAL_FIELDS = ["POSITIONING","CLIENT_CODE"]
                 missing_fields = [
                     field for field in REQUIRED_FIELDS
-                    if not data.get(field) or str(data.get(field)).strip() == ""
+                   if field not in OPTIONAL_FIELDS and (not data.get(field) or str(data.get(field)).strip() == "")
                 ]
 
                 if missing_fields:
@@ -644,7 +668,8 @@ if __name__ == "__main__":
     json_output = r"C:\Users\admin\OneDrive\Desktop\OCR\Workflow\parser\SAMVAD\SAMVAD.json" #output JSON file path
     error_csv = r"C:\Users\admin\OneDrive\Desktop\OCR\error\SAMVAD_error.csv" #error CSV file path
     log_folder = r"C:\Users\admin\OneDrive\Desktop\OCR\logs"#log folder path
-
+    #folder_path = r"C:\Users\admin\OneDrive\Desktop\test"
+    
     setup_logger(log_folder)
     process_folder(folder_path, csv_output, json_output, error_csv)
     print("processed successfully.")
